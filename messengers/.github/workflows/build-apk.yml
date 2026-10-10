@@ -1,0 +1,90 @@
+name: Build LAN Messenger APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Install Android SDK packages explicitly. Do not ask for the obsolete "tools" package.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |\n            platform-tools\n            platforms;android-35\n            build-tools;35.0.0
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-not-set}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-not-set}"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$SDK" || { echo "::error::Android SDK path was not provided"; exit 1; }
+          test -d "$SDK/platforms/android-35" || { echo "::error::Android SDK platform android-35 was not installed"; exit 1; }
+          test -d "$SDK/build-tools/35.0.0" || { echo "::error::Android build-tools 35.0.0 were not installed"; exit 1; }
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
+      - name: Validate project files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f settings.gradle
+          test -f build.gradle
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/com/lanmessenger/apk/MainActivity.java
+          test -f app/src/main/java/com/lanmessenger/apk/LanReverseProxy.java
+          test -f app/src/main/assets/index.html
+
+      # The uploaded V4 archive has gradlew scripts but no gradle/wrapper files.
+      # Generate a complete wrapper using the Gradle version installed by setup-gradle.
+      - name: Install Gradle and generate missing Wrapper files
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Create complete Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon wrapper --gradle-version 8.7 --distribution-type bin
+          chmod +x ./gradlew
+          test -s gradle/wrapper/gradle-wrapper.jar
+          test -s gradle/wrapper/gradle-wrapper.properties
+          test -s gradlew
+
+      - name: Build debug APK
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace clean assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LAN-Messenger-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
